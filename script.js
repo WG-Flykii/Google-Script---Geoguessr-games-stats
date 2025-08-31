@@ -510,7 +510,6 @@ function logEncounteredCountries(spreadsheet, gameData) {
     sheet.clear();
   }
 
-  // Récupérer toutes les parties pour cette combinaison map/mode depuis la feuille Games
   const gamesSheet = spreadsheet.getSheetByName('Games');
   if (!gamesSheet) return;
   
@@ -520,7 +519,17 @@ function logEncounteredCountries(spreadsheet, gameData) {
     toModeLabelLower({restrictions: getModeRestrictions(game[4])}) === mode // Game Mode
   );
 
-  // Calculer les statistiques générales
+  // Get ALL rounds for this map/mode combination from the Rounds sheet
+  const roundsSheet = spreadsheet.getSheetByName('Rounds');
+  if (!roundsSheet) return;
+  
+  const allRounds = roundsSheet.getDataRange().getValues().slice(1); // Skip header
+  const filteredRounds = allRounds.filter(round => 
+    round[2] === mapName && // Map Name
+    toModeLabelLower({restrictions: getModeRestrictions(round[3])}) === mode // Game Mode
+  );
+
+  // Calculate general statistics
   let totalScore = 0;
   let totalDistance = 0;
   let gameCount = filteredGames.length;
@@ -536,11 +545,11 @@ function logEncounteredCountries(spreadsheet, gameData) {
   const avgDistance = gameCount > 0 ? Math.round((totalDistance / gameCount) * 100) / 100 : 0;
   const perfectRate = gameCount > 0 ? Math.round((perfectGames / gameCount) * 10000) / 100 : 0;
 
-  // En-tête principal
+  // Main header
   sheet.getRange(1, 1).setValue(`${mapName} - ${mode.toUpperCase()}`);
   sheet.getRange(1, 1).setFontWeight('bold').setFontSize(14);
 
-  // Statistiques générales sur la droite
+  // General statistics on the right
   sheet.getRange(1, 4).setValue('GENERAL STATISTICS');
   sheet.getRange(1, 4).setFontWeight('bold').setFontSize(12);
 
@@ -555,15 +564,13 @@ function logEncounteredCountries(spreadsheet, gameData) {
   sheet.getRange(2, 4, generalStats.length, 2).setValues(generalStats);
   sheet.getRange(2, 4, generalStats.length, 1).setFontWeight('bold');
 
-  // En-têtes pour les pays
   sheet.getRange(3, 1, 1, 2).setValues([['Country', 'Encountered']]);
   sheet.getRange(3, 1, 1, 2).setFontWeight('bold');
   sheet.setFrozenRows(3);
 
-  // Compter les pays rencontrés
   const counts = {};
-  (gameData.rounds || []).forEach(r => {
-    const code = (r.country || '').toUpperCase();
+  filteredRounds.forEach(round => {
+    const code = (round[7] || '').toString().toUpperCase(); // Actual Country column
     if (!code || code === 'UNKNOWN') return;
     counts[code] = (counts[code] || 0) + 1;
   });
