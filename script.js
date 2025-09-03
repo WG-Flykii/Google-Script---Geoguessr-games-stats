@@ -140,20 +140,136 @@ function detectGameMode(gameData) {
   return restrictions.length > 0 ? restrictions.join('') : 'Custom';
 }
 
-function getCountryFromCoordinates(lat, lng) {
-  try {
-    const response = Maps.newGeocoder().reverseGeocode(lat, lng);
-    if (response.results && response.results.length > 0) {
-      const addressComponents = response.results[0].address_components;
-      for (let component of addressComponents) {
-        if (component.types.includes('country')) {
-          return component.short_name.toLowerCase();
+function getCountryFromCoordinates(lat, lng, maxRetries = 3, baseDelay = 1000) {
+  if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
+    console.log(`Invalid coordinates: lat=${lat}, lng=${lng}`);
+    return 'unknown';
+  }
+  
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    console.log(`Coordinates out of range: lat=${lat}, lng=${lng}`);
+    return 'unknown';
+  }
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Geocoding attempt ${attempt}/${maxRetries} for coordinates: ${lat}, ${lng}`);
+      
+      const response = Maps.newGeocoder()
+        .setLanguage('en') 
+        .reverseGeocode(lat, lng);
+      
+      if (response && response.results && response.results.length > 0) {
+        for (const result of response.results) {
+          if (result.address_components) {
+            for (const component of result.address_components) {
+              if (component.types && component.types.includes('country')) {
+                const countryCode = component.short_name.toLowerCase();
+                console.log(`Found country code: ${countryCode} (attempt ${attempt})`);
+                return countryCode;
+              }
+            }
+            
+            for (const component of result.address_components) {
+              if (component.types && 
+                  component.types.includes('political') && 
+                  component.types.includes('country')) {
+                const countryCode = component.short_name.toLowerCase();
+                console.log(`Found country code via political: ${countryCode} (attempt ${attempt})`);
+                return countryCode;
+              }
+            }
+          }
+        }
+        
+        if (response.results[0].formatted_address) {
+          const address = response.results[0].formatted_address;
+          const countryCode = extractCountryFromAddress(address);
+          if (countryCode !== 'unknown') {
+            console.log(`Extracted country from address: ${countryCode} (attempt ${attempt})`);
+            return countryCode;
+          }
         }
       }
+      
+      console.log(`No country found in geocoding response (attempt ${attempt})`);
+      
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        console.log(`Waiting ${delay}ms before retry...`);
+        Utilities.sleep(delay);
+      }
+      
+    } catch (error) {
+      console.log(`Geocoding error on attempt ${attempt}:`, error.toString());
+      
+      if (error.toString().includes('quota') || error.toString().includes('limit')) {
+        console.log('Geocoding quota exceeded, waiting longer...');
+        if (attempt < maxRetries) {
+          Utilities.sleep(baseDelay * 5);
+        }
+      } else if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        Utilities.sleep(delay);
+      }
     }
-  } catch (error) {
-    console.log('Geocoding error:', error);
   }
+  
+  console.log(`All geocoding attempts failed for coordinates: ${lat}, ${lng}`);
+  return 'unknown';
+}
+
+function extractCountryFromAddress(address) {
+  const countryPatterns = {
+    'United States': 'us',
+    'USA': 'us',
+    'Canada': 'ca',
+    'United Kingdom': 'gb',
+    'UK': 'gb',
+    'France': 'fr',
+    'Germany': 'de',
+    'Spain': 'es',
+    'Italy': 'it',
+    'Netherlands': 'nl',
+    'Belgium': 'be',
+    'Switzerland': 'ch',
+    'Austria': 'at',
+    'Sweden': 'se',
+    'Norway': 'no',
+    'Denmark': 'dk',
+    'Finland': 'fi',
+    'Poland': 'pl',
+    'Czech Republic': 'cz',
+    'Hungary': 'hu',
+    'Romania': 'ro',
+    'Bulgaria': 'bg',
+    'Greece': 'gr',
+    'Turkey': 'tr',
+    'Russia': 'ru',
+    'Ukraine': 'ua',
+    'Japan': 'jp',
+    'South Korea': 'kr',
+    'China': 'cn',
+    'India': 'in',
+    'Australia': 'au',
+    'New Zealand': 'nz',
+    'Brazil': 'br',
+    'Argentina': 'ar',
+    'Chile': 'cl',
+    'Mexico': 'mx',
+    'South Africa': 'za',
+    'Kenya': 'ke',
+    'Iceland': 'is',
+    'Ireland': 'ie',
+    'Portugal': 'pt'
+  };
+  
+  for (const [country, code] of Object.entries(countryPatterns)) {
+    if (address.includes(country)) {
+      return code;
+    }
+  }
+  
   return 'unknown';
 }
 
@@ -218,9 +334,6 @@ function saveRoundsDetails(spreadsheet, gameData) {
       `=HYPERLINK("https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${round.lat},${round.lng}&heading=0&pitch=0";"Actual Location")`
       : '';
 
-
-
-
     const row = [
       new Date(gameData.date),
       gameData.token,
@@ -253,7 +366,7 @@ function saveCountryGuesses(spreadsheet, gameData) {
   
   gameData.rounds.forEach(round => {
     if (round.guessLat && round.guessLng) {
-      const guessedCountry = getCountryFromCoordinates(round.guessLat, round.guessLng);
+      const guessedCountry = getCountryFromCoordinates(round.guessLat, round.guessLng, 5, 2000);
       const actualCountry = round.country || 'unknown';
       const correctGuess = guessedCountry === actualCountry ? 'YES' : 'NO';
       
@@ -280,6 +393,8 @@ function saveCountryGuesses(spreadsheet, gameData) {
         guessLocation
       ];
       sheet.appendRow(row);
+      
+      Utilities.sleep(500);
     }
   });
 }
@@ -513,43 +628,39 @@ function logEncounteredCountries(spreadsheet, gameData) {
   const gamesSheet = spreadsheet.getSheetByName('Games');
   if (!gamesSheet) return;
   
-  const allGames = gamesSheet.getDataRange().getValues().slice(1); // Skip header
+  const allGames = gamesSheet.getDataRange().getValues().slice(1);
   const filteredGames = allGames.filter(game => 
-    game[2] === mapName && // Map Name
-    toModeLabelLower({restrictions: getModeRestrictions(game[4])}) === mode // Game Mode
+    game[2] === mapName &&
+    toModeLabelLower({restrictions: getModeRestrictions(game[4])}) === mode
   );
 
-  // Get ALL rounds for this map/mode combination from the Rounds sheet
   const roundsSheet = spreadsheet.getSheetByName('Rounds');
   if (!roundsSheet) return;
   
-  const allRounds = roundsSheet.getDataRange().getValues().slice(1); // Skip header
+  const allRounds = roundsSheet.getDataRange().getValues().slice(1);
   const filteredRounds = allRounds.filter(round => 
-    round[2] === mapName && // Map Name
-    toModeLabelLower({restrictions: getModeRestrictions(round[3])}) === mode // Game Mode
+    round[2] === mapName &&
+    toModeLabelLower({restrictions: getModeRestrictions(round[3])}) === mode
   );
 
-  // Calculate general statistics
   let totalScore = 0;
   let totalDistance = 0;
   let gameCount = filteredGames.length;
   let perfectGames = 0;
 
   filteredGames.forEach(game => {
-    totalScore += game[5] || 0; // Score column
-    totalDistance += game[6] || 0; // Distance column
-    if (game[9] === 'YES') perfectGames++; // Perfect Score column
+    totalScore += game[5] || 0;
+    totalDistance += game[6] || 0;
+    if (game[9] === 'YES') perfectGames++;
   });
 
   const avgScore = gameCount > 0 ? Math.round(totalScore / gameCount) : 0;
   const avgDistance = gameCount > 0 ? Math.round((totalDistance / gameCount) * 100) / 100 : 0;
   const perfectRate = gameCount > 0 ? Math.round((perfectGames / gameCount) * 10000) / 100 : 0;
 
-  // Main header
   sheet.getRange(1, 1).setValue(`${mapName} - ${mode.toUpperCase()}`);
   sheet.getRange(1, 1).setFontWeight('bold').setFontSize(14);
 
-  // General statistics on the right
   sheet.getRange(1, 4).setValue('GENERAL STATISTICS');
   sheet.getRange(1, 4).setFontWeight('bold').setFontSize(12);
 
@@ -570,7 +681,7 @@ function logEncounteredCountries(spreadsheet, gameData) {
 
   const counts = {};
   filteredRounds.forEach(round => {
-    const code = (round[7] || '').toString().toUpperCase(); // Actual Country column
+    const code = (round[7] || '').toString().toUpperCase();
     if (!code || code === 'UNKNOWN') return;
     counts[code] = (counts[code] || 0) + 1;
   });
@@ -586,7 +697,6 @@ function logEncounteredCountries(spreadsheet, gameData) {
   sheet.autoResizeColumns(1, 6);
 }
 
-// Fonction helper pour obtenir les restrictions à partir du nom du mode
 function getModeRestrictions(gameMode) {
   if (gameMode === 'Moving') {
     return { forbidMoving: false, forbidZooming: false, forbidRotating: false };
@@ -597,7 +707,87 @@ function getModeRestrictions(gameMode) {
   if (gameMode === 'NMPZ') {
     return { forbidMoving: true, forbidZooming: true, forbidRotating: true };
   }
-  return { forbidMoving: false, forbidZooming: false, forbidRotating: false }; // Custom default
+  return { forbidMoving: false, forbidZooming: false, forbidRotating: false };
+}
+
+function fixExistingUnknownCountries() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Country Recognition');
+  
+  if (!sheet) {
+    console.log('Country Recognition sheet not found');
+    return;
+  }
+  
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  let updatedCount = 0;
+  
+  const guessedCountryCol = headers.indexOf('Guessed Country');
+  const guessLatCol = headers.indexOf('Guess Location');
+  
+  if (guessedCountryCol === -1) {
+    console.log('Guessed Country column not found');
+    return;
+  }
+  
+  console.log(`Processing ${data.length - 1} rows...`);
+  
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const guessedCountry = row[guessedCountryCol];
+    
+    if (guessedCountry === 'UNKNOWN') {
+      let guessLat, guessLng;
+      
+      const possibleLatCol = headers.indexOf('Guess Lat') !== -1 ? headers.indexOf('Guess Lat') : -1;
+      const possibleLngCol = headers.indexOf('Guess Lng') !== -1 ? headers.indexOf('Guess Lng') : -1;
+      
+      if (possibleLatCol !== -1 && possibleLngCol !== -1) {
+        guessLat = row[possibleLatCol];
+        guessLng = row[possibleLngCol];
+      } else {
+        const guessLocationFormula = row[guessLatCol] || '';
+        if (typeof guessLocationFormula === 'string' && guessLocationFormula.includes('viewpoint=')) {
+          const match = guessLocationFormula.match(/viewpoint=([^,]+),([^&"]+)/);
+          if (match) {
+            guessLat = parseFloat(match[1]);
+            guessLng = parseFloat(match[2]);
+          }
+        }
+      }
+      
+      if (guessLat && guessLng) {
+        console.log(`Row ${i + 1}: Attempting to fix coordinates ${guessLat}, ${guessLng}`);
+        
+        const newCountryCode = getCountryFromCoordinates(guessLat, guessLng, 3, 1500);
+        
+        if (newCountryCode !== 'unknown') {
+          sheet.getRange(i + 1, guessedCountryCol + 1).setValue(newCountryCode.toUpperCase());
+          console.log(`Row ${i + 1}: Updated ${guessedCountry} to ${newCountryCode.toUpperCase()}`);
+          updatedCount++;
+          
+          const actualCountryCol = headers.indexOf('Actual Country');
+          const correctGuessCol = headers.indexOf('Correct Guess');
+          
+          if (actualCountryCol !== -1 && correctGuessCol !== -1) {
+            const actualCountry = row[actualCountryCol];
+            const isCorrect = actualCountry.toLowerCase() === newCountryCode.toLowerCase() ? 'YES' : 'NO';
+            sheet.getRange(i + 1, correctGuessCol + 1).setValue(isCorrect);
+          }
+          
+          Utilities.sleep(1000);
+        }
+      }
+    }
+    
+    if (i % 10 === 0) {
+      console.log(`Processed ${i}/${data.length - 1} rows, updated ${updatedCount} entries`);
+    }
+  }
+  
+  console.log(`Fix completed: ${updatedCount} entries updated`);
+  return updatedCount;
 }
 
 function testSaveGame() {
