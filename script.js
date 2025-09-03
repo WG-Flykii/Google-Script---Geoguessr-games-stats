@@ -815,3 +815,8 @@ function testSaveGame() {
   const result = saveGameToSheets(testGameData);
   console.log(result);
 }
+
+
+function runFixExistingData() {
+  fixExistingUnknownCountries();
+}
